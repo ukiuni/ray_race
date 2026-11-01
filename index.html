@@ -4,6 +4,15 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <title>GRAND PRIX 3D</title>
+<meta name="description" content="WebGL フォーミュラ・レーシングゲーム（8台 / 3周）">
+<meta name="theme-color" content="#0b0d14">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="GP 3D">
 <style>
   html,body{margin:0;height:100%;overflow:hidden;background:#000;color:#fff;
     font-family:"Helvetica Neue",Arial,"Hiragino Sans",sans-serif;user-select:none}
@@ -1484,6 +1493,11 @@ addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
 });
+</script>
+<script>
+  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+    addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch((e) => console.warn('SW registration failed', e)));
+  }
 </script>
 </body>
 </html>
