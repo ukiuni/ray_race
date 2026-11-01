@@ -188,10 +188,11 @@
 </div>
 
 <script type="importmap">
-{ "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+{ "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js", "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
 </script>
 <script type="module">
 import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 // =====================================================================
 //  定数
@@ -550,55 +551,250 @@ function minTrackDist(x, z, step = 4) {
 }
 
 // =====================================================================
-//  F1 マシンのモデル
+//  F1 マシンのモデル（ロフト曲面で滑らかに構築）
 // =====================================================================
-function buildCar(color, accent) {
-  const g = new THREE.Group();
-  const body = new THREE.MeshStandardMaterial({ color, metalness: 0.45, roughness: 0.3 });
-  const acc = new THREE.MeshStandardMaterial({ color: accent, metalness: 0.3, roughness: 0.4 });
-  const dark = new THREE.MeshStandardMaterial({ color: 0x141414, metalness: 0.3, roughness: 0.6 });
-  const tireM = new THREE.MeshStandardMaterial({ color: 0x0e0e0e, roughness: 0.95 });
-  const rimM = new THREE.MeshStandardMaterial({ color: 0x9a9a9a, metalness: 0.85, roughness: 0.3 });
-  const add = (geo, mat, x, y, z, parent = g) => {
-    const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = true; parent.add(m); return m;
-  };
-  add(new THREE.BoxGeometry(0.85, 0.46, 3.0), body, 0, 0.5, 0.1);           // モノコック
-  const nose = new THREE.CylinderGeometry(0.1, 0.36, 1.7, 12); nose.rotateX(Math.PI / 2); nose.scale(1, 0.6, 1);
-  add(nose, body, 0, 0.42, 2.45);                                           // ノーズ
-  add(new THREE.BoxGeometry(2.1, 0.05, 0.55), acc, 0, 0.13, 3.05);          // フロントウイング
-  add(new THREE.BoxGeometry(2.0, 0.04, 0.3), body, 0, 0.21, 2.95);
-  for (const s of [1, -1]) {
-    add(new THREE.BoxGeometry(0.05, 0.28, 0.62), dark, s * 1.05, 0.22, 3.0); // 翼端板
-    add(new THREE.BoxGeometry(0.55, 0.42, 1.7), body, s * 0.68, 0.45, -0.3); // サイドポッド
-    add(new THREE.BoxGeometry(0.04, 0.6, 0.62), dark, s * 0.58, 0.9, -2.35); // リア翼端板
+// 断面（スーパー楕円）をZ方向に補間しながら繋いで滑らかな胴体を作る
+// station: [z, xCenter, halfW, top, bottom, yCenter, exp]
+function loftGeo(keys, seg = 32, sub = 6) {
+  const cr = (p0, p1, p2, p3, t) => 0.5 * ((2 * p1) + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t * t + (-p0 + 3 * p1 - 3 * p2 + p3) * t * t * t);
+  const st = [];
+  for (let i = 0; i < keys.length - 1; i++) {
+    const a = keys[Math.max(0, i - 1)], b = keys[i], c = keys[i + 1], d = keys[Math.min(keys.length - 1, i + 2)];
+    for (let s = 0; s < sub; s++) st.push(b.map((_, k) => cr(a[k], b[k], c[k], d[k], s / sub)));
   }
-  add(new THREE.BoxGeometry(0.58, 0.55, 1.7), body, 0, 0.82, -0.95);        // エンジンカバー
-  add(new THREE.BoxGeometry(0.06, 0.55, 0.9), body, 0, 1.0, -1.6);          // シャークフィン
-  add(new THREE.BoxGeometry(0.32, 0.32, 0.45), dark, 0, 1.05, -0.3);        // エアボックス
-  add(new THREE.BoxGeometry(1.7, 0.05, 3.7), dark, 0, 0.13, -0.4);          // フロア
-  add(new THREE.BoxGeometry(1.0, 0.22, 0.35), dark, 0, 0.22, -2.25);        // ディフューザー
-  add(new THREE.BoxGeometry(1.15, 0.06, 0.45), acc, 0, 1.08, -2.38);        // リアウイング
-  add(new THREE.BoxGeometry(1.15, 0.05, 0.25), body, 0, 1.2, -2.25);
-  add(new THREE.BoxGeometry(0.08, 0.7, 0.12), dark, 0, 0.72, -2.3);
-  add(new THREE.SphereGeometry(0.17, 16, 12), acc, 0, 0.9, 0.15);            // ヘルメット
-  const halo = new THREE.TorusGeometry(0.33, 0.035, 6, 18, Math.PI); halo.rotateX(Math.PI / 2);
-  add(halo, dark, 0, 1.0, 0.12);
-  add(new THREE.BoxGeometry(0.06, 0.28, 0.06), dark, 0, 0.86, 0.47);
+  st.push(keys[keys.length - 1].slice());
+  const pos = [], idx = [];
+  const ring = (z, xc, hw, top, bot, yc, n) => {
+    for (let j = 0; j < seg; j++) {
+      const th = (j / seg) * Math.PI * 2, c = Math.cos(th), s = Math.sin(th);
+      const e = 2 / n;
+      pos.push(xc + hw * Math.sign(c) * Math.abs(c) ** e, yc + (s >= 0 ? top : bot) * Math.sign(s) * Math.abs(s) ** e, z);
+    }
+  };
+  for (const s of st) ring(...s);
+  for (let i = 0; i < st.length - 1; i++) for (let j = 0; j < seg; j++) {
+    const a = i * seg + j, b = i * seg + (j + 1) % seg, c = a + seg, d = b + seg;
+    idx.push(a, c, b, b, c, d);
+  }
+  const sideCount = idx.length;
+  // 端面（別頂点にして側面の法線を乱さない）
+  const cap = (si, flip) => {
+    const base = pos.length / 3; const s = st[si];
+    ring(...s); pos.push(s[1], s[5], s[0]);
+    const ctr = base + seg;
+    for (let j = 0; j < seg; j++) {
+      const a = base + j, b = base + (j + 1) % seg;
+      flip ? idx.push(ctr, a, b) : idx.push(ctr, b, a);
+    }
+  };
+  cap(0, true); const capA = idx.length - sideCount;
+  cap(st.length - 1, false);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  g.addGroup(0, sideCount, 0); g.addGroup(sideCount, capA, 1); g.addGroup(sideCount + capA, idx.length - sideCount - capA, 2);
+  g.computeVertexNormals();
+  return g;
+}
+// 翼断面を押し出した翼（前縁が +Z、翼幅は X 方向）
+function wingGeo(span, chord, thick, aoa, curve = 0) {
+  const s = new THREE.Shape();
+  s.moveTo(0, 0);
+  s.bezierCurveTo(0, thick * 0.9, chord * 0.25, thick, chord, thick * 0.12);
+  s.lineTo(chord, 0);
+  s.bezierCurveTo(chord * 0.5, -thick * 0.1, chord * 0.05, -thick * 0.35, 0, 0);
+  const g = new THREE.ExtrudeGeometry(s, { depth: span, bevelEnabled: true, bevelThickness: 0.008, bevelSize: 0.006, bevelSegments: 2, curveSegments: 10, steps: curve ? 16 : 1 });
+  g.translate(0, 0, -span / 2); g.rotateY(Math.PI / 2); g.rotateX(aoa);
+  if (curve) { // 中央を少し持ち上げたアーチ形状
+    const p = g.attributes.position;
+    for (let i = 0; i < p.count; i++) { const x = p.getX(i) / (span / 2); p.setY(i, p.getY(i) + curve * (1 - x * x)); }
+    g.computeVertexNormals();
+  }
+  return g;
+}
+// 側面形状（Z-Y平面の輪郭）を X 方向に薄く押し出す
+function plateGeo(pts, thick) {
+  const s = new THREE.Shape();
+  s.moveTo(-pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) s.lineTo(-pts[i][0], pts[i][1]);
+  const g = new THREE.ExtrudeGeometry(s, { depth: thick, bevelEnabled: true, bevelThickness: 0.006, bevelSize: 0.01, bevelSegments: 3 });
+  g.translate(0, 0, -thick / 2); g.rotateY(Math.PI / 2);
+  return g;
+}
+function rodGeo(a, b, r) {
+  const g = new THREE.CylinderGeometry(r, r, 1, 8);
+  const va = new THREE.Vector3(...a), vb = new THREE.Vector3(...b), d = vb.clone().sub(va);
+  g.scale(1, d.length(), 1);
+  g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), d.normalize()));
+  g.translate((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2);
+  return g;
+}
+function tubeGeo(pts, r, seg = 40) {
+  return new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts.map((p) => new THREE.Vector3(...p))), seg, r, 10, false);
+}
+const mirrorX = (g) => { const m = g.clone(); m.scale(-1, 1, 1); const ix = m.index.array; for (let i = 0; i < ix.length; i += 3) { const t = ix[i]; ix[i] = ix[i + 2]; ix[i + 2] = t; } m.computeVertexNormals(); return m; };
+
+let CAR_GEO = null;
+function carGeometries() {
+  if (CAR_GEO) return CAR_GEO;
+  const G = {};
+  // モノコック〜ノーズ〜エンジンカバー（一体の滑らかな胴体）
+  G.body = loftGeo([
+    [3.18, 0, 0.05, 0.035, 0.03, 0.25, 2.2],
+    [2.85, 0, 0.13, 0.08, 0.06, 0.29, 2.4],
+    [2.2, 0, 0.22, 0.13, 0.1, 0.37, 2.6],
+    [1.5, 0, 0.31, 0.18, 0.15, 0.46, 2.8],
+    [0.8, 0, 0.38, 0.23, 0.2, 0.53, 3.0],
+    [0.15, 0, 0.41, 0.26, 0.24, 0.55, 3.0],
+    [-0.35, 0, 0.4, 0.42, 0.24, 0.55, 2.6],
+    [-0.8, 0, 0.35, 0.4, 0.23, 0.55, 2.4],
+    [-1.5, 0, 0.26, 0.26, 0.2, 0.52, 2.3],
+    [-2.05, 0, 0.16, 0.14, 0.13, 0.48, 2.2],
+    [-2.4, 0, 0.08, 0.07, 0.07, 0.46, 2.0],
+  ], 36, 7);
+  // サイドポッド（前面はダークのインテーク）
+  const pod = loftGeo([
+    [0.78, 0.62, 0.2, 0.15, 0.13, 0.5, 3.2],
+    [0.55, 0.64, 0.25, 0.18, 0.15, 0.49, 3.0],
+    [0.0, 0.6, 0.26, 0.17, 0.15, 0.47, 2.8],
+    [-0.7, 0.48, 0.2, 0.13, 0.12, 0.43, 2.5],
+    [-1.4, 0.34, 0.11, 0.08, 0.08, 0.37, 2.3],
+    [-1.8, 0.26, 0.05, 0.04, 0.04, 0.34, 2.0],
+  ], 28, 6);
+  G.podR = pod; G.podL = mirrorX(pod);
+  // コクピット開口部・エアボックス吸気口
+  G.cockpit = new THREE.SphereGeometry(1, 24, 12); G.cockpit.scale(0.27, 0.07, 0.5); G.cockpit.translate(0, 0.8, 0.28);
+  G.intake = new THREE.SphereGeometry(1, 20, 10); G.intake.scale(0.13, 0.11, 0.06); G.intake.translate(0, 0.9, -0.12);
+  G.helmet = new THREE.SphereGeometry(0.155, 24, 16); G.helmet.translate(0, 0.93, 0.18);
+  G.visor = new THREE.SphereGeometry(0.158, 24, 8, -0.9, 1.8, 1.25, 0.5); G.visor.translate(0, 0.93, 0.18);
+  // ヘイロー
+  G.halo = new THREE.BufferGeometry();
+  const haloTube = tubeGeo([[-0.3, 0.74, -0.18], [-0.32, 0.94, -0.02], [-0.24, 1.0, 0.28], [0, 1.02, 0.42], [0.24, 1.0, 0.28], [0.32, 0.94, -0.02], [0.3, 0.74, -0.18]], 0.032, 60);
+  const haloPillar = tubeGeo([[0, 1.02, 0.42], [0, 0.93, 0.6], [0, 0.8, 0.72]], 0.03, 16);
+  G.halo = [haloTube, haloPillar];
+  // フロア / ディフューザー
+  const fl = new THREE.Shape();
+  fl.moveTo(-0.32, -1.25); fl.quadraticCurveTo(-0.5, -1.0, -0.82, 0.2); fl.lineTo(-0.85, 1.85); fl.quadraticCurveTo(-0.82, 2.0, -0.6, 2.05);
+  fl.lineTo(0.6, 2.05); fl.quadraticCurveTo(0.82, 2.0, 0.85, 1.85); fl.lineTo(0.82, 0.2); fl.quadraticCurveTo(0.5, -1.0, 0.32, -1.25); fl.closePath();
+  G.floor = new THREE.ExtrudeGeometry(fl, { depth: 0.035, bevelEnabled: true, bevelThickness: 0.01, bevelSize: 0.02, bevelSegments: 2, curveSegments: 12 });
+  G.floor.rotateX(-Math.PI / 2); G.floor.translate(0, 0.11, 0);
+  G.diffuser = wingGeo(0.95, 0.42, 0.06, -0.35); G.diffuser.translate(0, 0.16, -1.98);
+  // フロントウイング（2段）とノーズ下ステー
+  G.fwMain = wingGeo(2.12, 0.52, 0.045, 0.04, -0.03); G.fwMain.translate(0, 0.1, 3.38);
+  G.fwFlap = wingGeo(1.9, 0.3, 0.035, 0.38, -0.02); G.fwFlap.translate(0, 0.16, 3.0);
+  G.fwPlate = plateGeo([[2.72, 0.06], [3.42, 0.06], [3.44, 0.14], [3.1, 0.34], [2.78, 0.36], [2.7, 0.28]], 0.022);
+  G.stays = [rodGeo([0.07, 0.24, 2.95], [0.12, 0.12, 3.05], 0.018), rodGeo([-0.07, 0.24, 2.95], [-0.12, 0.12, 3.05], 0.018)];
+  // リアウイング（メイン + DRS フラップ）、翼端板、スワンネック
+  G.rwMain = wingGeo(1.1, 0.4, 0.07, 0.14); G.rwMain.translate(0, 0.98, -2.08);
+  G.rwFlap = wingGeo(1.1, 0.24, 0.045, 0.5); G.rwFlap.translate(0, 1.1, -2.34);
+  G.rwPlate = plateGeo([[-2.02, 0.5], [-2.02, 1.18], [-2.12, 1.3], [-2.62, 1.3], [-2.62, 0.62], [-2.4, 0.5]], 0.025);
+  G.rwPylon = tubeGeo([[0, 0.5, -2.3], [0, 0.78, -2.32], [0, 0.98, -2.24]], 0.03, 12);
+  G.fin = plateGeo([[-0.45, 0.9], [-2.05, 1.0], [-2.05, 0.7], [-0.9, 0.82]], 0.018);
+  G.light = new THREE.CapsuleGeometry(0.03, 0.12, 4, 8); G.light.rotateZ(Math.PI / 2); G.light.translate(0, 0.46, -2.44);
+  // ミラー
+  G.mirrors = [];
+  for (const s of [1, -1]) {
+    const m = new THREE.SphereGeometry(1, 16, 10); m.scale(0.075, 0.045, 0.05); m.translate(s * 0.5, 0.86, 0.62);
+    G.mirrors.push(m, rodGeo([s * 0.3, 0.74, 0.62], [s * 0.48, 0.85, 0.62], 0.012));
+  }
+  // サスペンション（ウィッシュボーン）
+  G.susp = [];
+  for (const s of [1, -1]) {
+    G.susp.push(
+      rodGeo([s * 0.25, 0.6, 1.95], [s * 0.86, 0.42, 1.75], 0.018), rodGeo([s * 0.25, 0.58, 1.5], [s * 0.86, 0.42, 1.75], 0.018),
+      rodGeo([s * 0.22, 0.36, 1.95], [s * 0.86, 0.26, 1.75], 0.018), rodGeo([s * 0.22, 0.36, 1.45], [s * 0.86, 0.26, 1.75], 0.018),
+      rodGeo([s * 0.3, 0.55, -1.35], [s * 0.82, 0.48, -1.65], 0.02), rodGeo([s * 0.22, 0.55, -1.95], [s * 0.82, 0.48, -1.65], 0.02),
+      rodGeo([s * 0.3, 0.3, -1.35], [s * 0.82, 0.24, -1.65], 0.02), rodGeo([s * 0.22, 0.3, -1.95], [s * 0.82, 0.24, -1.65], 0.02),
+    );
+  }
+  // タイヤ（丸みのある断面を回転体で）
+  const tire = (r, w) => {
+    const ri = r * 0.64, h = w / 2, pts = [new THREE.Vector2(ri, -h + 0.01)];
+    const sh = 0.07;
+    for (let i = 0; i <= 8; i++) { const a = -Math.PI / 2 + (i / 8) * Math.PI / 2; pts.push(new THREE.Vector2(r - sh + Math.cos(a) * sh, -h + sh + Math.sin(a) * sh)); }
+    for (let i = 0; i <= 8; i++) { const a = (i / 8) * Math.PI / 2; pts.push(new THREE.Vector2(r - sh + Math.cos(a) * sh, h - sh + Math.sin(a) * sh)); }
+    pts.push(new THREE.Vector2(ri, h - 0.01));
+    for (const p of pts) p.y = -p.y; // 外向き法線になるよう順序を反転
+    const g = new THREE.LatheGeometry(pts, 48); g.rotateZ(Math.PI / 2); return g;
+  };
+  const rim = (r, w) => {
+    const ri = r * 0.64, parts = [];
+    const barrel = new THREE.CylinderGeometry(ri, ri, w * 0.92, 32, 1, true); barrel.rotateZ(Math.PI / 2); parts.push(barrel);
+    for (const side of [1, -1]) {
+      const disc = new THREE.CircleGeometry(ri, 32); disc.rotateY(side * Math.PI / 2); disc.translate(side * w * 0.3, 0, 0); parts.push(disc);
+    }
+    return parts;
+  };
+  const spokes = (r, w) => {
+    const ri = r * 0.64, list = [];
+    for (const side of [1, -1]) for (let k = 0; k < 5; k++) {
+      const a = (k / 5) * Math.PI * 2, sg = new THREE.CylinderGeometry(0.022, 0.03, ri * 0.92, 6);
+      sg.translate(0, ri * 0.46, 0); sg.rotateX(a); sg.translate(side * w * 0.31, 0, 0); list.push(sg);
+    }
+    const hub = new THREE.CylinderGeometry(0.06, 0.06, w * 0.66, 16); hub.rotateZ(Math.PI / 2); list.push(hub);
+    return list;
+  };
+  const band = (r, w) => {
+    const l = [];
+    for (const side of [1, -1]) { const t = new THREE.TorusGeometry(r * 0.83, 0.012, 6, 48); t.rotateY(Math.PI / 2); t.translate(side * (w / 2 + 0.002), 0, 0); l.push(t); }
+    return l;
+  };
+  G.wheel = {};
+  for (const [k, r, w] of [['f', 0.34, 0.36], ['r', 0.37, 0.48]]) G.wheel[k] = { tire: tire(r, w), rim: rim(r, w), spokes: spokes(r, w), band: band(r, w), r };
+  return (CAR_GEO = G);
+}
+
+let carEnv = null;
+function buildCar(color, accent) {
+  if (!carEnv) {
+    const pm = new THREE.PMREMGenerator(renderer);
+    carEnv = pm.fromScene(new RoomEnvironment(), 0.04).texture; pm.dispose();
+  }
+  const G = carGeometries();
+  const g = new THREE.Group();
+  const env = { envMap: carEnv, envMapIntensity: 0.9 };
+  const body = new THREE.MeshPhysicalMaterial({ color, metalness: 0.5, roughness: 0.32, clearcoat: 1, clearcoatRoughness: 0.06, ...env });
+  const acc = new THREE.MeshPhysicalMaterial({ color: accent, metalness: 0.4, roughness: 0.35, clearcoat: 0.8, clearcoatRoughness: 0.1, ...env });
+  const carbon = new THREE.MeshStandardMaterial({ color: 0x17181b, metalness: 0.55, roughness: 0.38, ...env, envMapIntensity: 0.6 });
+  const black = new THREE.MeshStandardMaterial({ color: 0x050505, roughness: 0.7 });
+  const tireM = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.9 });
+  const rimM = new THREE.MeshStandardMaterial({ color: 0x2a2c30, metalness: 0.9, roughness: 0.25, ...env });
+  const visorM = new THREE.MeshStandardMaterial({ color: 0x1a1030, metalness: 1, roughness: 0.05, ...env, envMapIntensity: 1.5 });
+  const lightM = new THREE.MeshStandardMaterial({ color: 0x330000, emissive: 0xff1010, emissiveIntensity: 2 });
+  const bandM = new THREE.MeshStandardMaterial({ color: 0xffd400, roughness: 0.5 });
+  const add = (geo, mat, parent = g, shadow = true) => {
+    const m = new THREE.Mesh(geo, mat); m.castShadow = shadow; parent.add(m); return m;
+  };
+  add(G.body, [body, acc, body]);
+  add(G.podR, [body, black, body]); add(G.podL, [body, black, body]);
+  add(G.cockpit, black, g, false); add(G.intake, black, g, false);
+  add(G.helmet, acc); add(G.visor, visorM, g, false);
+  for (const h of G.halo) add(h, carbon);
+  add(G.floor, carbon); add(G.diffuser, carbon);
+  add(G.fwMain, carbon); add(G.fwFlap, acc);
+  for (const s of [1, -1]) { const p = add(G.fwPlate, acc); p.position.x = s * 1.06; }
+  for (const s of G.stays) add(s, carbon, g, false);
+  add(G.rwMain, carbon); add(G.rwFlap, acc);
+  for (const s of [1, -1]) { const p = add(G.rwPlate, body); p.position.x = s * 0.56; }
+  add(G.rwPylon, carbon); add(G.fin, body);
+  add(G.light, lightM, g, false);
+  for (const m of G.mirrors) add(m, carbon, g, false);
+  for (const s of G.susp) add(s, carbon, g, false);
   // タイヤ
   const wheels = [], pivots = [];
-  const mkWheel = (r, w, x, z, front) => {
-    const pivot = new THREE.Group(); pivot.position.set(x, r, z); g.add(pivot);
+  const mkWheel = (k, x, z, front) => {
+    const W = G.wheel[k];
+    const pivot = new THREE.Group(); pivot.position.set(x, W.r, z); g.add(pivot);
     const wheel = new THREE.Group(); pivot.add(wheel);
-    const tg = new THREE.CylinderGeometry(r, r, w, 22); tg.rotateZ(Math.PI / 2);
-    add(tg, tireM, 0, 0, 0, wheel);
-    const rg = new THREE.CylinderGeometry(r * 0.6, r * 0.6, w + 0.02, 16); rg.rotateZ(Math.PI / 2);
-    add(rg, rimM, 0, 0, 0, wheel);
-    add(new THREE.BoxGeometry(w + 0.04, r * 1.1, 0.07), dark, 0, 0, 0, wheel);
-    wheels.push({ obj: wheel, r });
+    add(W.tire, tireM, wheel);
+    for (const p of W.rim) add(p, rimM, wheel, false);
+    for (const p of W.spokes) add(p, rimM, wheel, false);
+    for (const p of W.band) add(p, bandM, wheel, false);
+    wheels.push({ obj: wheel, r: W.r });
     if (front) pivots.push(pivot);
   };
-  mkWheel(0.34, 0.36, 0.95, 1.75, true); mkWheel(0.34, 0.36, -0.95, 1.75, true);
-  mkWheel(0.37, 0.48, 0.95, -1.65, false); mkWheel(0.37, 0.48, -0.95, -1.65, false);
+  mkWheel('f', 0.95, 1.75, true); mkWheel('f', -0.95, 1.75, true);
+  mkWheel('r', 0.95, -1.65, false); mkWheel('r', -0.95, -1.65, false);
   return { group: g, wheels, pivots };
 }
 
@@ -878,9 +1074,149 @@ const audio = {
     this.filter.frequency.setTargetAtTime(700 + throttle * 2200 + rpm * 0.08, t, 0.05);
     this.eng.gain.setTargetAtTime(this.on && !paused ? 0.25 + throttle * 0.35 : 0, t, 0.05);
     this.skid.gain.setTargetAtTime(this.on && !paused ? skid * 0.25 : 0, t, 0.05);
+    bgm.update(this.on);
   },
   toggle() { this.on = !this.on; },
 };
+
+// =====================================================================
+//  BGM（WebAudio でリアルタイム合成するオリジナル曲 / Em・150BPM）
+// =====================================================================
+const bgm = (() => {
+  const BPM = 150, STEP = 60 / BPM / 4; // 16分音符
+  const mtof = (m) => 440 * 2 ** ((m - 69) / 12);
+  const CH = {
+    Em: { b: 40, a: [64, 67, 71, 76] }, C: { b: 36, a: [64, 67, 72, 76] }, G: { b: 43, a: [62, 67, 71, 74] },
+    D: { b: 38, a: [62, 66, 69, 74] }, Am: { b: 45, a: [64, 69, 72, 76] }, B: { b: 47, a: [63, 66, 71, 75] },
+  };
+  // メロディ：小節ごとに [音高(null=休符), 長さ(16分)] の並び（各小節16）
+  const hookA = [
+    [[76, 2], [79, 2], [83, 4], [81, 2], [79, 2], [78, 2], [79, 2]],
+    [[76, 4], [null, 2], [72, 2], [76, 2], [79, 2], [84, 4]],
+    [[83, 2], [81, 2], [79, 2], [74, 2], [79, 4], [83, 4]],
+    [[81, 6], [78, 2], [74, 4], [null, 4]],
+  ];
+  const leadA = [...hookA, ...hookA.slice(0, 3), [[81, 2], [83, 2], [86, 4], [88, 8]]];
+  const leadB = [
+    [[84, 4], [83, 2], [81, 2], [76, 4], [81, 4]],
+    [[84, 2], [86, 2], [88, 4], [86, 2], [84, 2], [79, 4]],
+    [[83, 4], [79, 2], [83, 2], [86, 4], [83, 4]],
+    [[81, 8], [78, 4], [81, 4]],
+    [[84, 4], [83, 2], [81, 2], [76, 4], [81, 4]],
+    [[84, 2], [86, 2], [88, 4], [91, 4], [88, 4]],
+    [[87, 4], [83, 4], [78, 4], [83, 4]],
+    [[87, 8], [null, 8]],
+  ];
+  const SECTIONS = [
+    { chords: ['Em', 'Em', 'C', 'D'], lead: null, bass: 'root', drums: 'intro' },
+    { chords: ['Em', 'C', 'G', 'D', 'Em', 'C', 'G', 'D'], lead: leadA, bass: 'pump', drums: 'rock' },
+    { chords: ['Am', 'C', 'G', 'D', 'Am', 'C', 'B', 'B'], lead: leadB, bass: 'pump', drums: 'four' },
+  ];
+  // 小節単位のタイムラインに展開（イントロの後は A→B をループ）
+  const bars = [];
+  for (const s of SECTIONS) s.chords.forEach((c, i) => {
+    const notes = [];
+    if (s.lead) { let p = 0; for (const [m, l] of s.lead[i]) { if (m) notes.push([p, m, l]); p += l; } }
+    bars.push({ ch: CH[c], notes, bass: s.bass, drums: s.drums, last: i === s.chords.length - 1 });
+  });
+  const LOOP_FROM = SECTIONS[0].chords.length;
+
+  let ctx, out, leadBus, noiseBuf, timer = null, step = 0, nextT = 0, playing = false;
+  function setup(a) {
+    ctx = a.ctx;
+    out = ctx.createGain(); out.gain.value = 0;
+    const comp = ctx.createDynamicsCompressor(); comp.threshold.value = -14; comp.ratio.value = 4;
+    out.connect(comp); comp.connect(a.master);
+    leadBus = ctx.createGain(); leadBus.connect(out);
+    const dl = ctx.createDelay(1); dl.delayTime.value = STEP * 3;
+    const fb = ctx.createGain(); fb.gain.value = 0.32; const wet = ctx.createGain(); wet.gain.value = 0.28;
+    leadBus.connect(dl); dl.connect(fb); fb.connect(dl); dl.connect(wet); wet.connect(out);
+    noiseBuf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
+    const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  }
+  function env(t, vol, atk, dur, rel) {
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + atk);
+    g.gain.setValueAtTime(vol, t + Math.max(atk, dur - rel)); g.gain.linearRampToValueAtTime(0, t + dur);
+    return g;
+  }
+  function synth(types, detunes, m, t, dur, vol, cutoff, dest, atk = 0.005, rel = 0.04) {
+    const g = env(t, vol, atk, dur, rel), f = ctx.createBiquadFilter();
+    f.type = 'lowpass'; f.frequency.setValueAtTime(cutoff * 2, t); f.frequency.exponentialRampToValueAtTime(cutoff, t + Math.min(dur, 0.15)); f.Q.value = 2;
+    f.connect(g); g.connect(dest);
+    types.forEach((ty, i) => {
+      const o = ctx.createOscillator(); o.type = ty; o.frequency.value = mtof(m); o.detune.value = detunes[i];
+      o.connect(f); o.start(t); o.stop(t + dur + 0.02);
+    });
+  }
+  function noise(t, dur, vol, type, freq) {
+    const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+    const f = ctx.createBiquadFilter(); f.type = type; f.frequency.value = freq;
+    const g = ctx.createGain(); g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    s.connect(f); f.connect(g); g.connect(out); s.start(t, Math.random() * 0.5); s.stop(t + dur + 0.02);
+  }
+  function kick(t) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.setValueAtTime(160, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+    g.gain.setValueAtTime(0.95, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.32);
+    o.connect(g); g.connect(out); o.start(t); o.stop(t + 0.34);
+  }
+  function snare(t, v = 1) {
+    noise(t, 0.16, 0.45 * v, 'highpass', 1200);
+    const o = ctx.createOscillator(), g = ctx.createGain(); o.type = 'triangle';
+    o.frequency.setValueAtTime(220, t); o.frequency.exponentialRampToValueAtTime(140, t + 0.06);
+    g.gain.setValueAtTime(0.35 * v, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+    o.connect(g); g.connect(out); o.start(t); o.stop(t + 0.12);
+  }
+  function play(n, t) {
+    const bar = bars[Math.floor(n / 16)], s = n % 16;
+    const { ch } = bar;
+    // ドラム
+    const fill = bar.last && s >= 12;
+    if (bar.drums === 'four' ? s % 4 === 0 : (s === 0 || s === 8 || (bar.drums === 'rock' && s === 10))) kick(t);
+    if (bar.drums !== 'intro' || Math.floor(n / 16) % 2 === 1) { if (s === 4 || s === 12) snare(t); }
+    if (fill && s !== 12) snare(t, 0.4 + (s - 12) * 0.15);
+    if (s % 2 === 0) noise(t, s % 4 === 2 && bar.drums === 'four' ? 0.18 : 0.04, 0.13, 'highpass', 7500);
+    else if (bar.drums !== 'intro') noise(t, 0.03, 0.05, 'highpass', 9000);
+    // ベース（8分）
+    if (s % 2 === 0) {
+      const i = s / 2, off = bar.bass === 'pump' ? (i % 2 ? 12 : 0) + (i === 7 ? -5 : 0) : 0;
+      synth(['sawtooth', 'square'], [0, -8], ch.b + off, t, STEP * 1.8, 0.28, 520, out);
+    }
+    // アルペジオ（16分）
+    const ap = [0, 1, 2, 3, 1, 2, 3, 2][s % 8];
+    synth(['square'], [0], ch.a[ap], t, STEP * 0.8, 0.05, 2600, out, 0.002, 0.03);
+    // リード
+    for (const [p, m, l] of bar.notes) if (p === s) {
+      synth(['sawtooth', 'sawtooth', 'square'], [-9, 9, 0], m, t, STEP * l * 0.95, 0.075, 3400, leadBus, 0.012, 0.06);
+    }
+  }
+  function tick() {
+    if (!playing || paused) { nextT = ctx.currentTime + 0.05; return; }
+    while (nextT < ctx.currentTime + 0.15) {
+      play(step, nextT);
+      nextT += STEP; step++;
+      if (step >= bars.length * 16) step = LOOP_FROM * 16;
+    }
+  }
+  return {
+    start(a) {
+      if (!a.ctx) return;
+      if (!ctx) setup(a);
+      this.stop(0);
+      step = 0; nextT = ctx.currentTime + 0.05; playing = true;
+      out.gain.cancelScheduledValues(ctx.currentTime); out.gain.setValueAtTime(0.0001, ctx.currentTime);
+      timer = setInterval(tick, 25); tick();
+    },
+    stop(fade = 1.5) {
+      if (!ctx) return;
+      playing = false; clearInterval(timer); timer = null;
+      const t = ctx.currentTime; out.gain.cancelScheduledValues(t); out.gain.setValueAtTime(out.gain.value, t);
+      out.gain.linearRampToValueAtTime(0, t + Math.max(0.01, fade));
+    },
+    update(on) { if (ctx && playing) out.gain.setTargetAtTime(on && !paused ? 0.8 : 0, ctx.currentTime, 0.08); },
+  };
+})();
 
 // =====================================================================
 //  HUD
@@ -985,7 +1321,7 @@ function resetRace() {
 
 function startRace() {
   difficulty = parseFloat($('diff').value);
-  audio.init(); audio.ctx.resume();
+  audio.init(); audio.ctx.resume(); bgm.stop(0.3);
   resetRace();
   $('menu').style.display = 'none'; $('result').style.display = 'none';
   document.querySelectorAll('.hud').forEach((e) => (e.style.display = 'block'));
@@ -1026,6 +1362,7 @@ function showResults() {
   $('resSub').textContent = `あなたの順位: ${pos}位 / ベストラップ ${fmt(player.best)}`;
   $('result').style.display = 'flex';
   state = 'result';
+  bgm.stop(2.5);
 }
 
 // =====================================================================
@@ -1082,7 +1419,7 @@ function frame() {
     if (state === 'countdown') {
       setLamps(Math.min(5, Math.floor(stateTime / 1.0)));
       if (stateTime >= goTime) {
-        state = 'race'; setLamps(0); showMsg('GO!', 1.2);
+        state = 'race'; setLamps(0); showMsg('GO!', 1.2); bgm.start(audio);
         setTimeout(() => (lightsEl.style.display = 'none'), 1500);
       }
     }
